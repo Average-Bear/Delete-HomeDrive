@@ -10,7 +10,6 @@ Requires PowerShell Version 3 or higher.
 Requires ActiveDirectory module.
 
 If user account no longer exists in Active Directory, delete Home Drive for associated user. 
-Outputs text file with deleted Home Drives and Total Storage Cleared.
 
 .DESCRIPTION
 Purpose of script to assist SysAdmins with the deletion of End-User home Drives and to mitigate the Human Error factor. Providing
