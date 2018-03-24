@@ -1,136 +1,117 @@
 <#
 .SYNOPSIS
-Written by:
-JBear 11/2/2016
-
-Last Edit:
-2/17/2017 JBear
-
-Requires PowerShell Version 3 or higher.
-Requires ActiveDirectory module.
-
-If user account no longer exists in Active Directory, delete Home Drive for associated user. 
+    If user account no longer exists in Active Directory, delete Home Drive for associated user. 
 
 .DESCRIPTION
-Purpose of script to assist SysAdmins with the deletion of End-User home Drives and to mitigate the Human Error factor. Providing
-the checks and balances to maintain a clean enviroment.
+    If user account no longer exists in Active Directory, delete Home Drive for associated user. 
 
-This script is meant to be set as a scheduled task and run on all servers listed in the $ServerBase array.
+.DESCRIPTION
+    Script assists SysAdmins with the deletion of End-User home drives and to mitigate the Human Error factor; providing the checks and balances to maintain a clean enviroment.
 
-Reports are output to \\Server\DIR\DeletedHomeDrives*.csv
+.NOTES
+    Author: JBear 11/2/2016
+    Edited: JBear 3/24/2018
 #>
 
-#Load Visual Basic .NET Framework
-[Void][System.Reflection.Assembly]::LoadWithPartialName('Microsoft.VisualBasic')
+[Cmdletbinding(SupportsShouldProcess)]
+param(
+
+    [Parameter(DontShow)]
+    [String[]]$Servers = @(
+    
+        '\\ACMESERVER\Repository\Test'#,
+        #'\\ACMESERVER\Students$'
+    ),
+    
+    [Parameter(DontShow)]
+    $LogDate = (Get-Date -Format yyyyMMdd),
+    
+    [Parameter(DontShow)]
+    $CsvPath = "\\ACMESHARE\IT\Reports\HomeDrive\Deleted-HomeDrives$($LogDate).csv",
+    
+    [Parameter(DontShow)]
+    $TxtPath = "\\ACMESHARE\IT\Reports\HomeDrive\Log-RoboCopy$($LogDate).txt"
+)
 
 Try {
 
     Import-Module ActiveDirectory -ErrorAction Stop
+    $SAMAccountNames = (Get-ADUser -Filter * -EA Stop | Sort SAMAccountName).SAMAccountName
 }
 
 Catch {
 
-    Write-Host -ForegroundColor Yellow "`nUnable to load Active Directory Module is required to run this script. Please, install RSAT and configure this server properly."
+    Write-Host -ForegroundColor Yellow "`nUnable to reach Active Directory Module."
     Break
 }
 
-#Empty arrays for later use
-$FileSize = @()
-$TotalOutput = @()
-$ErrorCheck = @()
-$SAMAccountNames = @()
+if($SAMAccountNames -eq $null) {
 
-#Check for Active Directory
-Try {
-
-    $ADUsers = Get-ADUser -Filter * -EA Stop | Sort SAMAccountName | Select SAMAccountName
-    $SAMAccountNames += $ADUsers.SAMAccountName
-}
-
-Catch {
-
-    $SAMError = [Microsoft.VisualBasic.Interaction]::MsgBox("Unable to reach Active Directory. Please check your connection...", "OKOnly,SystemModal", "Error")
-    Break;
-}
-
-if($SAMAccountNames -eq $NULL){
-
-    Break;
+    Break
     Write-Host "You Broke it"
-
 }
 
-#Array of Home Drive paths
+function DeleteDrive {
+[Cmdletbinding(SupportsShouldProcess)]Param()
 
-$Servers = @(
+    New-Item -ItemType Directory -Path "$HomeDrive\RoboTemp" | Out-Null
+    
+    #Robocopy $RoboTemp directory to all child folders; Log file generated for all entries
+    Robocopy "$HomeDrive\RoboTemp" $HomeDrive /MIR /LOG+:$txtPath
 
-    '\\Server\Home$',
-    '\\Server\Students$'
-)
+    #Delete user $HomeDrive
+    Remove-Item $HomeDrive -Recurse -Confirm:$false
+}
 
-#Out-File creation path
-$prevFiles = Get-ChildItem '\\Server\DIR\DeletedHomeDrives*.csv'
-$prevVersion = ($prevFiles.Name -replace '[^\d]' | foreach { [int]$_ } | sort | select -last 1) + 1
-$OutPath = ('\\Server\DIR\DeletedHomeDrives{0:D3}.csv' -f $prevVersion)
+function DriveUtilization {
 
-#Robo Out-File creation path
-$RoboPrevFiles = Get-ChildItem '\\Server\DIR\RobocopyLog*.txt'
-$RoboPrevVersion = ($RoboPrevFiles.Name -replace '[^\d]' | foreach { [int]$_ } | sort | select -last 1) + 1
-$RoboOutPath = ('\\Server\DIR\RobocopyLog{0:D3}.txt' -f $RoboPrevVersion)
+    ForEach($Server in $Servers) {
 
-#Get All Active Directory Users by SAMAccountName
-ForEach($Server in $Servers) {
+        #Retrieve object 'name' from each $Server path
+        $Names = Get-ChildItem -LiteralPath $Server -Directory | Select-Object Name
 
-    #Retrieve object 'name' from each $Server path
-    $Names = Get-ChildItem -LiteralPath $Server -Directory | Select-Object Name
+        ForEach($Name in $Names) {
 
-    ForEach($Name in $Names) {
+            $User = $SAMAccountNames -Contains $Name.name
 
-        $User = $SAMAccountNames -contains $Name.name
+            #If user object still exists, do nothing
+            #If user DOES NOT exist, start deletion and reporting process
+            If($User -eq $false) {
 
-        #If user object still exists, do nothing
-        #If user DOES NOT exist, start deletion and reporting process
-        If($User -eq $false) {
+                $Script:HomeDrive = "$Server\$($Name.name)"
+                $HomeDriveRecurse = Get-ChildItem $HomeDrive -Recurse -ErrorAction "SilentlyContinue"
 
-            $HomeDrive = "$Server" + "\" + $Name.name
-            $Robo = New-Item -ItemType Directory -Path "$HomeDrive\RoboTemp" | Out-Null
-            $HomeDriveRecurse = Get-ChildItem $HomeDrive -Recurse -ErrorAction "SilentlyContinue"
+                #Measure file lengths (bytes) for each $HomeDrive recursively to retrieve full directory size
+                $MeasureDir = ($HomeDriveRecurse | Where {-NOT $_.PSIsContainer} | Measure-Object -Property Length -Sum)
 
-            #Measure file lengths (bytes) for each $HomeDrive recursively to retrieve full directory size
-            $MeasureDir = ($HomeDriveRecurse | Where {-NOT $_.PSIscontainer} | Measure-Object -Property Length -Sum)
+                #Divide value of $MeasureDir (bytes) by MegaBytes (MB)
+                $SumSize = $MeasureDir.Sum/1MB
+                $Results = @(
+                
+                    if(Test-Path $HomeDrive) {
+                    
+                        $true 
+                    }
 
-            #Divide value of $MeasureDir (bytes) by MegaBytes (MB)
-            $SumSize = $MeasureDir.Sum/1MB
+                    else {
+                    
+                        $false
+                    }
+                )
 
-            #Add $SumSize values to $FileSize array
-            $FileSize += $SumSize
-            $ErrorCheck += $HomeDrive
+                #Call delete function
+                DeleteDrive
 
-            $props = @{
+                [PSCustomObject] @{
 
-                HomeDriveDeleted = $HomeDrive
-                DriveUtilization = "{0:N2}" -f $SumSize + " MB"
+                    HomeDrive = $HomeDrive
+                    DriveUtilization = "{0:N2}" -f $SumSize + " MB"
+                    Removed = "$Results"
+                } 
             }
-
-            New-Object PsObject -Property $props | Select HomeDriveDeleted, DriveUtilization | Export-CSV -Path $Outpath -Append -NoTypeInformation
-
-            #Robocopy $RoboTemp directory to all child folders; Log file generated for all entries
-            Robocopy "$HomeDrive\RoboTemp" $HomeDrive /MIR /LOG+:$RoboOutPath
-
-            #Delete user $HomeDrive
-            Remove-Item $HomeDrive -Recurse -Confirm:$false
-        }#If
-    }#ForEach($Name)
-
-#Invoke math operations on $FileSize array
-$TotalFileSize = $FileSize -Join '+'
-$InvokeSum = Invoke-Expression $TotalFileSize
-
-#Add $InvokeSum values to $TotalOutput array
-$TotalOutput += $InvokeSum
-
-#Invoke math operations on $FileSize array
-$ServerSum = $TotalOutput -Join '+'
-$InvokeFinal = Invoke-Expression $ServerSum
-
+        }
+    }
 }
+
+#Call main function
+DriveUtilization | Select HomeDrive, DriveUtilization, Removed | Export-CSV -Path $CsvPath -NoTypeInformation
